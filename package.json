@@ -1,0 +1,23 @@
+{
+  "name": "p2p-monitoring",
+  "version": "1.0.0",
+  "description": "Telegram bot for monitoring Wallet P2P market prices",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": ["telegram", "p2p", "wallet", "monitor"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.15.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "telegraf": "^4.16.3"
+  }
+}

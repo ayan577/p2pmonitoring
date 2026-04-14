@@ -43,6 +43,8 @@ let config = {
   cryptoCurrency: CRYPTO_CURRENCY,
   fiatCurrency: FIAT_CURRENCY,
   side: SIDE,
+  alertMode: 'ALL', // 'ALL' or 'THRESHOLD'
+  thresholdValue: THRESHOLD,
 };
 
 // ─── Wallet P2P API ─────────────────────────────────────────
@@ -131,7 +133,8 @@ function buildStatusMessage() {
     `• Пара: \`${config.cryptoCurrency}/${config.fiatCurrency}\``,
     `• Направление: ${sideLabel(config.side)}`,
     `• Интервал: каждые ${CHECK_INTERVAL} сек`,
-    THRESHOLD ? `• Порог алерта: ${fmtPrice(THRESHOLD)} ${config.fiatCurrency}` : `• Порог алерта: не задан`,
+    `• Режим алертов: ${config.alertMode === 'ALL' ? 'ВССЕ изменения' : 'ТОЛЬКО ниже порога'}`,
+    config.thresholdValue ? `• Порог: ${fmtPrice(config.thresholdValue)} ${config.fiatCurrency}` : `• Порог: не задан`,
     ``,
     `📈 *Статистика*`,
     `• Проверок: ${totalChecks}`,
@@ -225,23 +228,27 @@ async function checkPrices() {
   if (lastBestPrice === null) {
     shouldAlert = true;
     reason = 'Мониторинг запущен';
-  }
-  // 2. Price changed
-  else if (bestPrice !== lastBestPrice) {
-    const diff = Math.abs(bestPrice - lastBestPrice);
-    const percentChange = (diff / lastBestPrice) * 100;
-
-    // Alert if price changed by more than 0.5%
-    if (percentChange >= 0.5) {
-      shouldAlert = true;
-      reason = bestPrice < lastBestPrice ? 'Цена упала! 📉' : 'Цена выросла 📈';
+  } else if (config.alertMode === 'ALL') {
+    // 2. Alert on any significant change (>= 0.5%)
+    if (bestPrice !== lastBestPrice) {
+      const diff = Math.abs(bestPrice - lastBestPrice);
+      const percentChange = (diff / lastBestPrice) * 100;
+      if (percentChange >= 0.5) {
+        shouldAlert = true;
+        reason = bestPrice < lastBestPrice ? 'Цена упала! 📉' : 'Цена выросла 📈';
+      }
     }
-  }
-
-  // 3. Threshold alert
-  if (THRESHOLD && bestPrice <= THRESHOLD && (lastBestPrice === null || lastBestPrice > THRESHOLD)) {
-    shouldAlert = true;
-    reason = `🎯 Цена ниже порога ${fmtPrice(THRESHOLD)}!`;
+    // Also alert if it hit threshold
+    if (config.thresholdValue && bestPrice <= config.thresholdValue && lastBestPrice > config.thresholdValue) {
+      shouldAlert = true;
+      reason = `🎯 Цена у порога ${fmtPrice(config.thresholdValue)}!`;
+    }
+  } else if (config.alertMode === 'THRESHOLD') {
+    // 3. Threshold mode - only alert if below threshold and changed
+    if (config.thresholdValue && bestPrice <= config.thresholdValue && bestPrice !== lastBestPrice) {
+      shouldAlert = true;
+      reason = `🎯 Цена ниже порога: ${fmtPrice(bestPrice)}!`;
+    }
   }
 
   if (shouldAlert) {
@@ -271,6 +278,8 @@ bot.command('start', (ctx) => {
     `/top — топ-5 лучших предложений\n` +
     `/pause — приостановить мониторинг\n` +
     `/resume — возобновить мониторинг\n` +
+    `/mode <all|threshold> — режим алертов\n` +
+    `/set\\_threshold <цена> — задать порог\n` +
     `/set\\_pair USDT KZT SELL — сменить пару\n` +
     `/help — справка`,
     { parse_mode: 'Markdown' }
@@ -286,6 +295,8 @@ bot.command('help', (ctx) => {
     `/top — топ-5 лучших объявлений\n` +
     `/pause — остановить проверки\n` +
     `/resume — запустить проверки\n` +
+    `/mode <all|threshold> — переключить режим\n` +
+    `/set\\_threshold <цена> — установить порог\n` +
     `/set\\_pair <crypto> <fiat> <side> — сменить пару\n\n` +
     `*Примеры:*\n` +
     `\`/set_pair USDT KZT SELL\` — продажа USDT за тенге\n` +
@@ -362,6 +373,40 @@ bot.command('resume', (ctx) => {
   lastBestPrice = null; // Reset to get fresh baseline
   ctx.reply('▶️ Мониторинг возобновлён! Следующая проверка через несколько секунд...');
   checkPrices(); // Immediate check
+});
+
+bot.command('mode', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length === 0) {
+    return ctx.reply(
+      `⚙️ Текущий режим: *${config.alertMode}*\n\n` +
+      `Используй: \`/mode all\` или \`/mode threshold\``,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  const m = args[0].toUpperCase();
+  if (m === 'ALL' || m === 'THRESHOLD') {
+    config.alertMode = m;
+    ctx.reply(`✅ Режим алертов изменён на: *${m}*`, { parse_mode: 'Markdown' });
+  } else {
+    ctx.reply('❌ Неизвестный режим. Используй `all` или `threshold`.');
+  }
+});
+
+bot.command('set_threshold', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length === 0) {
+    return ctx.reply('⚠️ Использование: `/set_threshold 490` (число)', { parse_mode: 'Markdown' });
+  }
+  
+  const val = parseFloat(args[0].replace(',', '.'));
+  if (isNaN(val)) {
+    return ctx.reply('❌ Пожалуйста, введи корректное число (например: 490.50)');
+  }
+  
+  config.thresholdValue = val;
+  ctx.reply(`🎯 Текущий порог цены установлен на: *${fmtPrice(val)} ${config.fiatCurrency}*`, { parse_mode: 'Markdown' });
 });
 
 bot.command('set_pair', (ctx) => {
@@ -445,7 +490,8 @@ async function main() {
     `• Пара: \`${config.cryptoCurrency}/${config.fiatCurrency}\`\n` +
     `• Направление: ${sideLabel(config.side)}\n` +
     `• Интервал: ${CHECK_INTERVAL} сек\n` +
-    (THRESHOLD ? `• Порог: ${fmtPrice(THRESHOLD)} ${config.fiatCurrency}\n` : '') +
+    `• Режим: ${config.alertMode}\n` +
+    (config.thresholdValue ? `• Порог: ${fmtPrice(config.thresholdValue)} ${config.fiatCurrency}\n` : '') +
     `\nОтправь /help для списка команд.`
   );
 

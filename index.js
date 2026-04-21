@@ -45,7 +45,6 @@ let config = {
   cryptoCurrency: CRYPTO_CURRENCY,
   fiatCurrency: FIAT_CURRENCY,
   side: SIDE, // Can be 'SELL', 'BUY', or 'BOTH'
-  alertMode: 'ALL', // 'ALL' or 'THRESHOLD'
   sellThreshold: parsedSellThreshold,
   buyThreshold: parsedBuyThreshold,
 };
@@ -141,7 +140,6 @@ function buildStatusMessage() {
     `• Состояние: ${monitoring ? '✅ Активен' : '⏸ Приостановлен'}`,
     `• Пара: \`${config.cryptoCurrency}/${config.fiatCurrency}\``,
     `• Направление: ${sideLabel(config.side)}`,
-    `• Режим алертов: ${config.alertMode === 'ALL' ? 'ВСЕ изменения' : 'ТОЛЬКО по порогу'}`,
     config.sellThreshold ? `• Порог КУПИТЬ: ${fmtPrice(config.sellThreshold)}` : `• Порог КУПИТЬ: не задан`,
     config.buyThreshold ? `• Порог ПРОДАТЬ: ${fmtPrice(config.buyThreshold)}` : `• Порог ПРОДАТЬ: не задан`,
     ``,
@@ -229,40 +227,13 @@ async function checkSidePrices(side) {
   const prevPrice = lastBestPrice[side];
   const threshold = side === 'SELL' ? config.sellThreshold : config.buyThreshold;
 
-  // 1. First check — always notify
-  if (prevPrice === null) {
-    shouldAlert = true;
-    reason = 'Мониторинг запущен';
-  } else if (config.alertMode === 'ALL') {
-    // 2. Alert on any significant change (>= 0.5%)
-    if (bestPrice !== prevPrice) {
-      const diff = Math.abs(bestPrice - prevPrice);
-      const percentChange = (diff / prevPrice) * 100;
-      if (percentChange >= 0.5) {
-        shouldAlert = true;
-        reason = bestPrice < prevPrice ? 'Цена упала! 📉' : 'Цена выросла 📈';
-      }
-    }
-    // Also alert if it hit threshold
-    if (threshold) {
-      if (side === 'SELL' && bestPrice <= threshold && prevPrice > threshold) {
-        shouldAlert = true;
-        reason = `Цена упала до порога ${fmtPrice(threshold)}`;
-      } else if (side === 'BUY' && bestPrice >= threshold && prevPrice < threshold) {
-        shouldAlert = true;
-        reason = `Цена поднялась до порога ${fmtPrice(threshold)}`;
-      }
-    }
-  } else if (config.alertMode === 'THRESHOLD') {
-    // 3. Threshold mode - only alert if hits threshold and changed
-    if (threshold && bestPrice !== prevPrice) {
-      if (side === 'SELL' && bestPrice <= threshold) {
-        shouldAlert = true;
-        reason = `ДОСТИГНУТ ПОРОГ ${threshold}`;
-      } else if (side === 'BUY' && bestPrice >= threshold) {
-        shouldAlert = true;
-        reason = `ДОСТИГНУТ ПОРОГ ${threshold}`;
-      }
+  if (threshold && bestPrice !== prevPrice) {
+    if (side === 'SELL' && bestPrice <= threshold) {
+      shouldAlert = true;
+      reason = `ЦЕНА НИЖЕ ИЛИ РАВНА ПОРОГУ (${fmtPrice(threshold)})`;
+    } else if (side === 'BUY' && bestPrice >= threshold) {
+      shouldAlert = true;
+      reason = `ЦЕНА ВЫШЕ ИЛИ РАВНА ПОРОГУ (${fmtPrice(threshold)})`;
     }
   }
 
@@ -320,17 +291,15 @@ bot.command('help', (ctx) => {
     `/top — топ-5 лучших объявлений\n` +
     `/pause — остановить проверки\n` +
     `/resume — запустить проверки\n` +
-    `/mode <all|threshold> — переключить режим\n` +
     `/set\\_threshold <sell|buy> <цена> — установить порог\n` +
     `/set\\_pair <crypto> <fiat> <side> — сменить пару\n\n` +
     `*Примеры:*\n` +
     `\`/set_pair USDT KZT BOTH\` — мониторить и покупку, и продажу\n` +
-    `\`/set_threshold sell 445\` — алерт, если покупка с рынка падает <= 445\n` +
-    `\`/set_threshold buy 500\` — алерт на трэш-заявки по продаже на рынке >= 500\n\n` +
+    `\`/set_threshold sell 445\` — алерт, если цена (на покупку) падает <= 445\n` +
+    `\`/set_threshold buy 500\` — алерт, если цена (на продажу) растёт >= 500\n\n` +
     `*Как работают алерты:*\n` +
     `• Бот проверяет лучшую цену каждые ${CHECK_INTERVAL} сек\n` +
-    `• Режим ALL: Алерт при изменении цены ≥ 0.5% и при пересечении порогов\n` +
-    `• Режим THRESHOLD: Только срабатывание порогов`,
+    `• Алерт приходит ТОЛЬКО если цена выгоднее или равна заданному порогу (и изменилась с прошлой проверки).`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -419,25 +388,6 @@ bot.command('resume', (ctx) => {
   lastBestPrice = { SELL: null, BUY: null }; // Reset to get fresh baseline
   ctx.reply('▶️ Мониторинг возобновлён! Следующая проверка через несколько секунд...');
   checkPrices(); // Immediate check
-});
-
-bot.command('mode', (ctx) => {
-  const args = ctx.message.text.split(' ').slice(1);
-  if (args.length === 0) {
-    return ctx.reply(
-      `⚙️ Текущий режим: *${config.alertMode}*\n\n` +
-      `Используй: \`/mode all\` или \`/mode threshold\``,
-      { parse_mode: 'Markdown' }
-    );
-  }
-  
-  const m = args[0].toUpperCase();
-  if (m === 'ALL' || m === 'THRESHOLD') {
-    config.alertMode = m;
-    ctx.reply(`✅ Режим алертов изменён на: *${m}*`, { parse_mode: 'Markdown' });
-  } else {
-    ctx.reply('❌ Неизвестный режим. Используй `all` или `threshold`.');
-  }
 });
 
 // Reply Keyboard interactions
@@ -597,9 +547,8 @@ async function main() {
     `• Пара: \`${config.cryptoCurrency}/${config.fiatCurrency}\`\n` +
     `• Направление: ${sideLabel(config.side)}\n` +
     `• Интервал: ${CHECK_INTERVAL} сек\n` +
-    `• Режим: ${config.alertMode}\n` +
     (config.sellThreshold ? `• Порог SELL: ${fmtPrice(config.sellThreshold)} ${config.fiatCurrency}\n` : '') +
-    (config.buyThreshold ? `• Порог BUY (трэш): ${fmtPrice(config.buyThreshold)} ${config.fiatCurrency}\n` : '') +
+    (config.buyThreshold ? `• Порог BUY: ${fmtPrice(config.buyThreshold)} ${config.fiatCurrency}\n` : '') +
     `\nОтправь /help для списка команд.`
   );
 

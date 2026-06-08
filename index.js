@@ -159,10 +159,6 @@ function sideLabel(side) {
 function mainInlineKeyboard() {
   return Markup.inlineKeyboard([
     [
-      Markup.button.callback('📊 Статус', 'action_status'),
-      Markup.button.callback('🔍 Топ-5', 'action_top'),
-    ],
-    [
       Markup.button.callback('🛒 Порог КУПИТЬ KZT', 'set_thresh_sell_KZT'),
       Markup.button.callback('💸 Порог ПРОДАТЬ KZT', 'set_thresh_buy_KZT'),
     ],
@@ -170,16 +166,12 @@ function mainInlineKeyboard() {
       Markup.button.callback('🛒 Порог КУПИТЬ RUB', 'set_thresh_sell_RUB'),
       Markup.button.callback('💸 Порог ПРОДАТЬ RUB', 'set_thresh_buy_RUB'),
     ],
-    [
-      Markup.button.callback('⏸ Пауза', 'action_pause'),
-      Markup.button.callback('▶️ Возобновить', 'action_resume'),
-    ],
   ]);
 }
 
-// Also keep reply keyboard for convenience
+// Reply keyboard — always visible, shown on /start
 const mainKeyboard = Markup.keyboard([
-  ['📊 Статус', '🔍 Топ-5'],
+  ['📊 Статус'],
   ['🛒 Порог КУПИТЬ KZT', '💸 Порог ПРОДАТЬ KZT'],
   ['🛒 Порог КУПИТЬ RUB', '💸 Порог ПРОДАТЬ RUB'],
 ]).resize();
@@ -456,33 +448,6 @@ bot.action('action_status', async (ctx) => {
   await ctx.reply(buildStatusMessage(), { parse_mode: 'Markdown', ...mainInlineKeyboard() });
 });
 
-bot.action('action_top', async (ctx) => {
-  await ctx.answerCbQuery('Загружаю...');
-  await topHandler(ctx);
-});
-
-bot.action('action_pause', async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!monitoring) {
-    return ctx.reply('⏸ Мониторинг уже приостановлен.');
-  }
-  monitoring = false;
-  await ctx.reply('⏸ Мониторинг приостановлен.', mainInlineKeyboard());
-});
-
-bot.action('action_resume', async (ctx) => {
-  await ctx.answerCbQuery();
-  if (monitoring) {
-    return ctx.reply('✅ Мониторинг уже работает.');
-  }
-  monitoring = true;
-  for (const fiat of PAIRS) {
-    pairConfigs[fiat].lastBestPrice = { SELL: null, BUY: null };
-  }
-  await ctx.reply('▶️ Мониторинг возобновлён!', mainInlineKeyboard());
-  checkPrices();
-});
-
 // Threshold inline buttons — ask user to type the value
 bot.action(/^set_thresh_(sell|buy)_(KZT|RUB)$/, async (ctx) => {
   const sideArg = ctx.match[1].toUpperCase(); // SELL or BUY
@@ -504,7 +469,6 @@ bot.hears('📊 Статус', (ctx) => {
   ctx.reply(buildStatusMessage(), { parse_mode: 'Markdown', ...mainInlineKeyboard() });
 });
 
-bot.hears('🔍 Топ-5', topHandler);
 
 let waitingForThreshold = null; // { side: 'SELL'|'BUY', fiat: 'KZT'|'RUB' }
 
@@ -546,7 +510,7 @@ bot.on('text', (ctx, next) => {
 
   // Ignore commands and known buttons
   if (text.startsWith('/') || [
-    '📊 Статус', '🔍 Топ-5',
+    '📊 Статус',
     '🛒 Порог КУПИТЬ KZT', '💸 Порог ПРОДАТЬ KZT',
     '🛒 Порог КУПИТЬ RUB', '💸 Порог ПРОДАТЬ RUB',
   ].includes(text)) {

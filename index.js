@@ -298,16 +298,16 @@ async function checkPrices() {
   totalChecks++;
   lastCheckTime = new Date();
 
-  // Check all pairs
+  // Fire all pair+side combinations in parallel
+  const tasks = [];
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    if (pc.side === 'BOTH') {
-      await checkSidePrices(pc, 'SELL');
-      await checkSidePrices(pc, 'BUY');
-    } else {
-      await checkSidePrices(pc, pc.side);
+    const sides = pc.side === 'BOTH' ? ['SELL', 'BUY'] : [pc.side];
+    for (const side of sides) {
+      tasks.push(checkSidePrices(pc, side));
     }
   }
+  await Promise.all(tasks);
 }
 
 // ─── Bot Commands ───────────────────────────────────────────

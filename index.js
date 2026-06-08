@@ -34,6 +34,19 @@ const INTERVAL_MS = parseInt(CHECK_INTERVAL, 10) * 1000;
 // Each pair has its own thresholds, prices, and state
 const PAIRS = ['KZT', 'RUB'];
 
+// ─── RUB Payment Filter ─────────────────────────────────────
+// For RUB pair: only process ads that accept ЮMoney.
+// Sber, T-Bank (Tinkoff), VTB, etc. are automatically excluded.
+// KZT is not affected.
+const RUB_ALLOWED_PAYMENTS = ['yoomoney'];
+
+function filterAdsByPayment(ads, fiatCurrency) {
+  if (fiatCurrency !== 'RUB') return ads; // KZT — без фильтра
+  return ads.filter((ad) =>
+    (ad.payments || []).some((p) => RUB_ALLOWED_PAYMENTS.includes(p.toLowerCase()))
+  );
+}
+
 let pairConfigs = {
   KZT: {
     cryptoCurrency: CRYPTO_CURRENCY,
@@ -241,15 +254,18 @@ async function sendAlert(text) {
 // ─── Main Check Loop ────────────────────────────────────────
 async function checkSidePrices(pairConfig, side) {
   const fiat = pairConfig.fiatCurrency;
-  const ads = await fetchAds(pairConfig, side);
+  const rawAds = await fetchAds(pairConfig, side);
 
-  if (ads === null) {
+  if (rawAds === null) {
     console.log(`⚠️  [${new Date().toLocaleTimeString()}] API error for ${side} ${fiat}, retrying...`);
     return;
   }
 
+  // Apply payment filter (RUB → only ЮMoney; KZT → all)
+  const ads = filterAdsByPayment(rawAds, fiat);
+
   if (ads.length === 0) {
-    console.log(`📭 [${new Date().toLocaleTimeString()}] No ads found for ${side} ${fiat}`);
+    console.log(`📭 [${new Date().toLocaleTimeString()}] No ads found for ${side} ${fiat}${fiat === 'RUB' ? ' (after ЮMoney filter)' : ''}`);
     return;
   }
 
@@ -346,13 +362,14 @@ bot.command('price', async (ctx) => {
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
     for (const s of ['SELL', 'BUY']) {
-      const ads = await fetchAds(pc, s);
-      if (ads === null) {
+      const rawAds = await fetchAds(pc, s);
+      if (rawAds === null) {
         await ctx.reply(`❌ Ошибка API для ${s} ${fiat}. Попробуй позже.`);
         continue;
       }
+      const ads = filterAdsByPayment(rawAds, fiat);
       if (ads.length === 0) {
-        await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}.`);
+        await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}${fiat === 'RUB' ? ' (только ЮMoney)' : ''}.`);
         continue;
       }
       const analysis = analyzeAds(ads, s);
@@ -366,13 +383,14 @@ const topHandler = async (ctx) => {
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
     for (const s of ['SELL', 'BUY']) {
-      const ads = await fetchAds(pc, s, 1, 50);
-      if (ads === null) {
+      const rawAds = await fetchAds(pc, s, 1, 50);
+      if (rawAds === null) {
         await ctx.reply(`❌ Ошибка API для ${s} ${fiat}.`);
         continue;
       }
+      const ads = filterAdsByPayment(rawAds, fiat);
       if (ads.length === 0) {
-        await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}.`);
+        await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}${fiat === 'RUB' ? ' (только ЮMoney)' : ''}.`);
         continue;
       }
 

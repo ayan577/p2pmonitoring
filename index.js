@@ -35,15 +35,20 @@ const INTERVAL_MS = parseInt(CHECK_INTERVAL, 10) * 1000;
 const PAIRS = ['KZT', 'RUB'];
 
 // ─── RUB Payment Filter ─────────────────────────────────────
-// For RUB pair: only process ads that accept ЮMoney.
-// Sber, T-Bank (Tinkoff), VTB, etc. are automatically excluded.
-// KZT is not affected.
-const RUB_ALLOWED_PAYMENTS = ['yoomoney'];
+// SELL (мы даём рубли, получаем USDT) → СБП + ЮMoney
+// BUY  (мы даём USDT, получаем рубли) → только ЮMoney
+// Сбер, Т-Банк, ВТБ и прочие автоматически исключены для обоих сторон.
+// KZT — фильтр не применяется.
+const RUB_PAYMENTS_BY_SIDE = {
+  SELL: ['sbp', 'yoomoney'],   // покупаем USDT за рубли
+  BUY:  ['yoomoney'],          // продаём USDT за рубли
+};
 
-function filterAdsByPayment(ads, fiatCurrency) {
+function filterAdsByPayment(ads, fiatCurrency, side) {
   if (fiatCurrency !== 'RUB') return ads; // KZT — без фильтра
+  const allowed = RUB_PAYMENTS_BY_SIDE[side] || [];
   return ads.filter((ad) =>
-    (ad.payments || []).some((p) => RUB_ALLOWED_PAYMENTS.includes(p.toLowerCase()))
+    (ad.payments || []).some((p) => allowed.includes(p.toLowerCase()))
   );
 }
 
@@ -262,7 +267,7 @@ async function checkSidePrices(pairConfig, side) {
   }
 
   // Apply payment filter (RUB → only ЮMoney; KZT → all)
-  const ads = filterAdsByPayment(rawAds, fiat);
+  const ads = filterAdsByPayment(rawAds, fiat, side);
 
   if (ads.length === 0) {
     console.log(`📭 [${new Date().toLocaleTimeString()}] No ads found for ${side} ${fiat}${fiat === 'RUB' ? ' (after ЮMoney filter)' : ''}`);
@@ -367,7 +372,7 @@ bot.command('price', async (ctx) => {
         await ctx.reply(`❌ Ошибка API для ${s} ${fiat}. Попробуй позже.`);
         continue;
       }
-      const ads = filterAdsByPayment(rawAds, fiat);
+      const ads = filterAdsByPayment(rawAds, fiat, s);
       if (ads.length === 0) {
         await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}${fiat === 'RUB' ? ' (только ЮMoney)' : ''}.`);
         continue;
@@ -388,7 +393,7 @@ const topHandler = async (ctx) => {
         await ctx.reply(`❌ Ошибка API для ${s} ${fiat}.`);
         continue;
       }
-      const ads = filterAdsByPayment(rawAds, fiat);
+      const ads = filterAdsByPayment(rawAds, fiat, s);
       if (ads.length === 0) {
         await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}${fiat === 'RUB' ? ' (только ЮMoney)' : ''}.`);
         continue;

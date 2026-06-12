@@ -41,33 +41,45 @@ const PAIRS = ['KZT', 'RUB'];
 // KZT — фильтр не применяется.
 const RUB_PAYMENTS_BY_SIDE = {
   SELL: ['sbp', 'yoomoney'],   // покупаем USDT за рубли
-  BUY:  ['yoomoney'],          // продаём USDT за рубли
 };
 
-function filterAdsByPayment(ads, fiatCurrency, side) {
+function filterAndLimitAds(ads, fiatCurrency, side) {
   if (fiatCurrency !== 'RUB') return ads; // KZT — без фильтра
   const allowed = RUB_PAYMENTS_BY_SIDE[side] || [];
-  return ads.filter((ad) =>
+  let filtered = ads.filter((ad) =>
     (ad.payments || []).some((p) => allowed.includes(p.toLowerCase()))
   );
+
+  // Apply 3,500 RUB limit for SBP ads in RUB SELL
+  if (side === 'SELL') {
+    filtered = filtered.filter((ad) => {
+      const hasSbp = (ad.payments || []).some((p) => p.toLowerCase() === 'sbp');
+      if (hasSbp) {
+        const min = parseFloat(ad.minAmount);
+        const max = parseFloat(ad.maxAmount);
+        return min <= 3500 && max >= 3500;
+      }
+      return true;
+    });
+  }
+
+  return filtered;
 }
 
 let pairConfigs = {
   KZT: {
     cryptoCurrency: CRYPTO_CURRENCY,
     fiatCurrency: 'KZT',
-    side: 'BOTH',
+    side: 'SELL',
     sellThreshold: SELL_THRESHOLD_KZT ? parseFloat(SELL_THRESHOLD_KZT) : null,
-    buyThreshold: BUY_THRESHOLD_KZT ? parseFloat(BUY_THRESHOLD_KZT) : null,
-    lastBestPrice: { SELL: null, BUY: null },
+    lastBestPrice: { SELL: null },
   },
   RUB: {
     cryptoCurrency: CRYPTO_CURRENCY,
     fiatCurrency: 'RUB',
-    side: 'BOTH',
+    side: 'SELL',
     sellThreshold: SELL_THRESHOLD_RUB ? parseFloat(SELL_THRESHOLD_RUB) : null,
-    buyThreshold: BUY_THRESHOLD_RUB ? parseFloat(BUY_THRESHOLD_RUB) : null,
-    lastBestPrice: { SELL: null, BUY: null },
+    lastBestPrice: { SELL: null },
   },
 };
 
@@ -160,21 +172,17 @@ function mainInlineKeyboard() {
   return Markup.inlineKeyboard([
     [
       Markup.button.callback('🛒 Порог КУПИТЬ KZT', 'set_thresh_sell_KZT'),
-      Markup.button.callback('💸 Порог ПРОДАТЬ KZT', 'set_thresh_buy_KZT'),
-    ],
-    [
       Markup.button.callback('🛒 Порог КУПИТЬ RUB', 'set_thresh_sell_RUB'),
-      Markup.button.callback('💸 Порог ПРОДАТЬ RUB', 'set_thresh_buy_RUB'),
     ],
   ]);
 }
 
 // Reply keyboard — always visible, shown on /start
 const mainKeyboard = Markup.keyboard([
-  ['📊 Статус'],
-  ['🛒 Порог КУПИТЬ KZT', '💸 Порог ПРОДАТЬ KZT'],
-  ['🛒 Порог КУПИТЬ RUB', '💸 Порог ПРОДАТЬ RUB'],
-]).resize();
+  ['📊 Статус', '🔎 Проверить цену'],
+  ['🛒 Порог KZT', '🛒 Порог RUB'],
+  ['⏸ Пауза', '▶️ Возобновить']
+], { is_persistent: true }).resize();
 
 // Build a status message (now multi-pair)
 function buildStatusMessage() {
@@ -195,9 +203,7 @@ function buildStatusMessage() {
     lines.push(
       `━━━ *USDT/${fiat}* ━━━`,
       `• Порог КУПИТЬ: ${pc.sellThreshold ? fmtPrice(pc.sellThreshold) : 'не задан'}`,
-      `• Порог ПРОДАТЬ: ${pc.buyThreshold ? fmtPrice(pc.buyThreshold) : 'не задан'}`,
-      `• Цена SELL: ${pc.lastBestPrice.SELL !== null ? fmtPrice(pc.lastBestPrice.SELL) : '—'}`,
-      `• Цена BUY: ${pc.lastBestPrice.BUY !== null ? fmtPrice(pc.lastBestPrice.BUY) : '—'}`,
+      `• Цена КУПИТЬ: ${pc.lastBestPrice.SELL !== null ? fmtPrice(pc.lastBestPrice.SELL) : '—'}`,
       ``,
     );
   }
@@ -258,11 +264,11 @@ async function checkSidePrices(pairConfig, side) {
     return;
   }
 
-  // Apply payment filter (RUB → only ЮMoney; KZT → all)
-  const ads = filterAdsByPayment(rawAds, fiat, side);
+  // Apply payment filter and limits
+  const ads = filterAndLimitAds(rawAds, fiat, side);
 
   if (ads.length === 0) {
-    console.log(`📭 [${new Date().toLocaleTimeString()}] No ads found for ${side} ${fiat}${fiat === 'RUB' ? ' (after ЮMoney filter)' : ''}`);
+    console.log(`📭 [${new Date().toLocaleTimeString()}] No ads found for ${side} ${fiat}`);
     return;
   }
 
@@ -275,12 +281,10 @@ async function checkSidePrices(pairConfig, side) {
   // Determine if we should send an alert
   let shouldAlert = false;
   const prevPrice = pairConfig.lastBestPrice[side];
-  const threshold = side === 'SELL' ? pairConfig.sellThreshold : pairConfig.buyThreshold;
+  const threshold = pairConfig.sellThreshold;
 
   if (threshold && bestPrice !== prevPrice) {
-    if (side === 'SELL' && bestPrice <= threshold) {
-      shouldAlert = true;
-    } else if (side === 'BUY' && bestPrice >= threshold) {
+    if (bestPrice <= threshold) {
       shouldAlert = true;
     }
   }
@@ -302,10 +306,7 @@ async function checkPrices() {
   const tasks = [];
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    const sides = pc.side === 'BOTH' ? ['SELL', 'BUY'] : [pc.side];
-    for (const side of sides) {
-      tasks.push(checkSidePrices(pc, side));
-    }
+    tasks.push(checkSidePrices(pc, 'SELL'));
   }
   await Promise.all(tasks);
 }
@@ -323,7 +324,7 @@ bot.use((ctx, next) => {
 bot.command('start', (ctx) => {
   ctx.reply(
     `👋 *Привет! Я P2P Monitor Bot*\n\n` +
-    `Я мониторю пары USDT/KZT и USDT/RUB.\n` +
+    `Я мониторю пары USDT/KZT и USDT/RUB (покупка USDT).\n` +
     `Используйте кнопки для навигации 👇`,
     { parse_mode: 'Markdown', ...mainKeyboard }
   );
@@ -335,15 +336,14 @@ bot.command('help', (ctx) => {
     `*Команды:*\n` +
     `/status — статус бота и статистика\n` +
     `/price — мгновенная проверка цены\n` +
-    `/top — топ-5 лучших объявлений\n` +
     `/pause — остановить проверки\n` +
     `/resume — запустить проверки\n` +
-    `/set\\_threshold <sell|buy> <kzt|rub> <цена> — установить порог\n\n` +
+    `/set\\_threshold <kzt|rub> <цена> — установить порог покупки\n\n` +
     `*Примеры:*\n` +
-    `\`/set_threshold sell kzt 445\` — алерт, если цена покупки KZT <= 445\n` +
-    `\`/set_threshold buy rub 95\` — алерт, если цена продажи RUB >= 95\n\n` +
+    `\`/set_threshold kzt 445\` — алерт, если цена покупки KZT <= 445\n` +
+    `\`/set_threshold rub 95\` — алерт, если цена покупки RUB <= 95\n\n` +
     `*Мониторинг:*\n` +
-    `• Пары: USDT/KZT и USDT/RUB\n` +
+    `• Пары: USDT/KZT и USDT/RUB (только покупка USDT)\n` +
     `• Проверка каждые ${CHECK_INTERVAL} сек\n` +
     `• Алерт приходит, если цена достигает порога`,
     { parse_mode: 'Markdown', ...mainKeyboard }
@@ -358,20 +358,18 @@ bot.command('price', async (ctx) => {
   ctx.reply('🔍 Проверяю...');
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    for (const s of ['SELL', 'BUY']) {
-      const rawAds = await fetchAds(pc, s);
-      if (rawAds === null) {
-        await ctx.reply(`❌ Ошибка API для ${s} ${fiat}. Попробуй позже.`);
-        continue;
-      }
-      const ads = filterAdsByPayment(rawAds, fiat, s);
-      if (ads.length === 0) {
-        await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}${fiat === 'RUB' ? ' (только ЮMoney)' : ''}.`);
-        continue;
-      }
-      const analysis = analyzeAds(ads, s);
-      await ctx.reply(buildAlertMessage(analysis, s, fiat), { parse_mode: 'Markdown' });
+    const rawAds = await fetchAds(pc, 'SELL');
+    if (rawAds === null) {
+      await ctx.reply(`❌ Ошибка API для КУПИТЬ ${fiat}. Попробуй позже.`);
+      continue;
     }
+    const ads = filterAndLimitAds(rawAds, fiat, 'SELL');
+    if (ads.length === 0) {
+      await ctx.reply(`📭 Объявлений не найдено для КУПИТЬ ${fiat}${fiat === 'RUB' ? ' (фильтр СБП/ЮMoney)' : ''}.`);
+      continue;
+    }
+    const analysis = analyzeAds(ads, 'SELL');
+    await ctx.reply(buildAlertMessage(analysis, 'SELL', fiat), { parse_mode: 'Markdown' });
   }
 });
 
@@ -379,46 +377,44 @@ const topHandler = async (ctx) => {
   ctx.reply('🔍 Загружаю топ...');
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    for (const s of ['SELL', 'BUY']) {
-      const rawAds = await fetchAds(pc, s, 1, 50);
-      if (rawAds === null) {
-        await ctx.reply(`❌ Ошибка API для ${s} ${fiat}.`);
-        continue;
-      }
-      const ads = filterAdsByPayment(rawAds, fiat, s);
-      if (ads.length === 0) {
-        await ctx.reply(`📭 Объявлений не найдено для ${s} ${fiat}${fiat === 'RUB' ? ' (только ЮMoney)' : ''}.`);
-        continue;
-      }
-
-      const sorted = [...ads].sort((a, b) => {
-        const pa = parseFloat(a.price);
-        const pb = parseFloat(b.price);
-        return s === 'SELL' ? pa - pb : pb - pa;
-      });
-      const top5 = sorted.slice(0, 5);
-
-      const lines = [
-        `🏆 *Топ-5 предложений*`,
-        `\`USDT/${fiat}\` | ${sideLabel(s)}`,
-        ``,
-      ];
-
-      top5.forEach((ad, i) => {
-        const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i];
-        const rate = ad.executeRate ? (parseFloat(ad.executeRate) * 100).toFixed(1) + '%' : '—';
-        lines.push(
-          `${medal} *${fmtPrice(ad.price)} ${fiat}*`,
-          `   👤 ${ad.nickname || '—'} | ⭐ ${rate} | 📦 ${ad.orderNum || 0} сделок`,
-          `   💳 ${(ad.payments || []).join(', ') || '—'}`,
-          `   📏 ${fmtPrice(ad.minAmount)}–${fmtPrice(ad.maxAmount)} ${fiat}`,
-          ``,
-        );
-      });
-
-      lines.push(`📊 Всего объявлений: ${ads.length}`);
-      await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    const rawAds = await fetchAds(pc, 'SELL', 1, 50);
+    if (rawAds === null) {
+      await ctx.reply(`❌ Ошибка API для КУПИТЬ ${fiat}.`);
+      continue;
     }
+    const ads = filterAndLimitAds(rawAds, fiat, 'SELL');
+    if (ads.length === 0) {
+      await ctx.reply(`📭 Объявлений не найдено для КУПИТЬ ${fiat}${fiat === 'RUB' ? ' (фильтр СБП/ЮMoney)' : ''}.`);
+      continue;
+    }
+
+    const sorted = [...ads].sort((a, b) => {
+      const pa = parseFloat(a.price);
+      const pb = parseFloat(b.price);
+      return pa - pb;
+    });
+    const top5 = sorted.slice(0, 5);
+
+    const lines = [
+      `🏆 *Топ-5 предложений*`,
+      `\`USDT/${fiat}\` | ${sideLabel('SELL')}`,
+      ``,
+    ];
+
+    top5.forEach((ad, i) => {
+      const medal = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'][i];
+      const rate = ad.executeRate ? (parseFloat(ad.executeRate) * 100).toFixed(1) + '%' : '—';
+      lines.push(
+        `${medal} *${fmtPrice(ad.price)} ${fiat}*`,
+        `   👤 ${ad.nickname || '—'} | ⭐ ${rate} | 📦 ${ad.orderNum || 0} сделок`,
+        `   💳 ${(ad.payments || []).join(', ') || '—'}`,
+        `   📏 ${fmtPrice(ad.minAmount)}–${fmtPrice(ad.maxAmount)} ${fiat}`,
+        ``,
+      );
+    });
+
+    lines.push(`📊 Всего объявлений: ${ads.length}`);
+    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
   }
 };
 
@@ -427,7 +423,7 @@ bot.command('top', topHandler);
 bot.command('pause', (ctx) => {
   if (!monitoring) return ctx.reply('⏸ Мониторинг уже приостановлен.');
   monitoring = false;
-  ctx.reply('⏸ Мониторинг приостановлен. Отправь /resume чтобы продолжить.', mainInlineKeyboard());
+  ctx.reply('⏸ Мониторинг приостановлен. Нажмите «Возобновить» чтобы продолжить.', mainInlineKeyboard());
 });
 
 bot.command('resume', (ctx) => {
@@ -435,7 +431,7 @@ bot.command('resume', (ctx) => {
   monitoring = true;
   // Reset prices
   for (const fiat of PAIRS) {
-    pairConfigs[fiat].lastBestPrice = { SELL: null, BUY: null };
+    pairConfigs[fiat].lastBestPrice = { SELL: null };
   }
   ctx.reply('▶️ Мониторинг возобновлён!', mainInlineKeyboard());
   checkPrices();
@@ -449,16 +445,13 @@ bot.action('action_status', async (ctx) => {
 });
 
 // Threshold inline buttons — ask user to type the value
-bot.action(/^set_thresh_(sell|buy)_(KZT|RUB)$/, async (ctx) => {
-  const sideArg = ctx.match[1].toUpperCase(); // SELL or BUY
-  const fiat = ctx.match[2]; // KZT or RUB
-  const label = sideArg === 'SELL' ? 'КУПИТЬ' : 'ПРОДАТЬ';
-
+bot.action(/^set_thresh_sell_(KZT|RUB)$/, async (ctx) => {
+  const fiat = ctx.match[1];
   await ctx.answerCbQuery();
-  waitingForThreshold = { side: sideArg, fiat };
+  waitingForThreshold = { side: 'SELL', fiat };
   await ctx.reply(
-    `Введите новую цену для порога ${label} (${fiat}).\n` +
-    `Текущий порог: ${sideArg === 'SELL' ? (pairConfigs[fiat].sellThreshold ? fmtPrice(pairConfigs[fiat].sellThreshold) : 'не задан') : (pairConfigs[fiat].buyThreshold ? fmtPrice(pairConfigs[fiat].buyThreshold) : 'не задан')}`,
+    `Введите новую цену для порога КУПИТЬ (${fiat}).\n` +
+    `Текущий порог: ${pairConfigs[fiat].sellThreshold ? fmtPrice(pairConfigs[fiat].sellThreshold) : 'не задан'}`,
     Markup.forceReply()
   );
 });
@@ -469,10 +462,28 @@ bot.hears('📊 Статус', (ctx) => {
   ctx.reply(buildStatusMessage(), { parse_mode: 'Markdown', ...mainInlineKeyboard() });
 });
 
+bot.hears('🔎 Проверить цену', async (ctx) => {
+  ctx.reply('🔍 Проверяю...');
+  for (const fiat of PAIRS) {
+    const pc = pairConfigs[fiat];
+    const rawAds = await fetchAds(pc, 'SELL');
+    if (rawAds === null) {
+      await ctx.reply(`❌ Ошибка API для КУПИТЬ ${fiat}. Попробуй позже.`);
+      continue;
+    }
+    const ads = filterAndLimitAds(rawAds, fiat, 'SELL');
+    if (ads.length === 0) {
+      await ctx.reply(`📭 Объявлений не найдено для КУПИТЬ ${fiat}${fiat === 'RUB' ? ' (фильтр СБП/ЮMoney)' : ''}.`);
+      continue;
+    }
+    const analysis = analyzeAds(ads, 'SELL');
+    await ctx.reply(buildAlertMessage(analysis, 'SELL', fiat), { parse_mode: 'Markdown' });
+  }
+});
 
-let waitingForThreshold = null; // { side: 'SELL'|'BUY', fiat: 'KZT'|'RUB' }
+let waitingForThreshold = null; // { side: 'SELL', fiat: 'KZT'|'RUB' }
 
-bot.hears('🛒 Порог КУПИТЬ KZT', (ctx) => {
+bot.hears('🛒 Порог KZT', (ctx) => {
   waitingForThreshold = { side: 'SELL', fiat: 'KZT' };
   ctx.reply(
     `Введите новую цену для порога КУПИТЬ (KZT).\nТекущий: ${pairConfigs.KZT.sellThreshold ? fmtPrice(pairConfigs.KZT.sellThreshold) : 'не задан'}`,
@@ -480,15 +491,7 @@ bot.hears('🛒 Порог КУПИТЬ KZT', (ctx) => {
   );
 });
 
-bot.hears('💸 Порог ПРОДАТЬ KZT', (ctx) => {
-  waitingForThreshold = { side: 'BUY', fiat: 'KZT' };
-  ctx.reply(
-    `Введите новую цену для порога ПРОДАТЬ (KZT).\nТекущий: ${pairConfigs.KZT.buyThreshold ? fmtPrice(pairConfigs.KZT.buyThreshold) : 'не задан'}`,
-    Markup.forceReply()
-  );
-});
-
-bot.hears('🛒 Порог КУПИТЬ RUB', (ctx) => {
+bot.hears('🛒 Порог RUB', (ctx) => {
   waitingForThreshold = { side: 'SELL', fiat: 'RUB' };
   ctx.reply(
     `Введите новую цену для порога КУПИТЬ (RUB).\nТекущий: ${pairConfigs.RUB.sellThreshold ? fmtPrice(pairConfigs.RUB.sellThreshold) : 'не задан'}`,
@@ -496,12 +499,21 @@ bot.hears('🛒 Порог КУПИТЬ RUB', (ctx) => {
   );
 });
 
-bot.hears('💸 Порог ПРОДАТЬ RUB', (ctx) => {
-  waitingForThreshold = { side: 'BUY', fiat: 'RUB' };
-  ctx.reply(
-    `Введите новую цену для порога ПРОДАТЬ (RUB).\nТекущий: ${pairConfigs.RUB.buyThreshold ? fmtPrice(pairConfigs.RUB.buyThreshold) : 'не задан'}`,
-    Markup.forceReply()
-  );
+bot.hears('⏸ Пауза', (ctx) => {
+  if (!monitoring) return ctx.reply('⏸ Мониторинг уже приостановлен.');
+  monitoring = false;
+  ctx.reply('⏸ Мониторинг приостановлен. Нажмите «Возобновить» чтобы продолжить.', mainInlineKeyboard());
+});
+
+bot.hears('▶️ Возобновить', (ctx) => {
+  if (monitoring) return ctx.reply('✅ Мониторинг уже работает.');
+  monitoring = true;
+  // Reset prices
+  for (const fiat of PAIRS) {
+    pairConfigs[fiat].lastBestPrice = { SELL: null };
+  }
+  ctx.reply('▶️ Мониторинг возобновлён!', mainInlineKeyboard());
+  checkPrices();
 });
 
 // Handle threshold text input
@@ -510,9 +522,9 @@ bot.on('text', (ctx, next) => {
 
   // Ignore commands and known buttons
   if (text.startsWith('/') || [
-    '📊 Статус',
-    '🛒 Порог КУПИТЬ KZT', '💸 Порог ПРОДАТЬ KZT',
-    '🛒 Порог КУПИТЬ RUB', '💸 Порог ПРОДАТЬ RUB',
+    '📊 Статус', '🔎 Проверить цену',
+    '🛒 Порог KZT', '🛒 Порог RUB',
+    '⏸ Пауза', '▶️ Возобновить'
   ].includes(text)) {
     return next();
   }
@@ -527,10 +539,9 @@ bot.on('text', (ctx, next) => {
       // If replying to a specific message, parse the side & fiat from it
       if (isReply && ctx.message.reply_to_message.text) {
         const replyText = ctx.message.reply_to_message.text;
-        const isSell = replyText.includes('КУПИТЬ');
         const fiatMatch = replyText.match(/(KZT|RUB)/);
         threshInfo = {
-          side: isSell ? 'SELL' : 'BUY',
+          side: 'SELL',
           fiat: fiatMatch ? fiatMatch[1] : (waitingForThreshold?.fiat || 'KZT'),
         };
       }
@@ -538,16 +549,11 @@ bot.on('text', (ctx, next) => {
       if (!threshInfo) threshInfo = { side: 'SELL', fiat: 'KZT' };
 
       const pc = pairConfigs[threshInfo.fiat];
-      if (threshInfo.side === 'SELL') {
-        pc.sellThreshold = val;
-      } else {
-        pc.buyThreshold = val;
-      }
+      pc.sellThreshold = val;
 
       waitingForThreshold = null;
-      const label = threshInfo.side === 'SELL' ? 'КУПИТЬ' : 'ПРОДАТЬ';
       return ctx.reply(
-        `✅ Порог ${label} (${threshInfo.fiat}) установлен: *${fmtPrice(val)} ${threshInfo.fiat}*`,
+        `✅ Порог КУПИТЬ (${threshInfo.fiat}) установлен: *${fmtPrice(val)} ${threshInfo.fiat}*`,
         { parse_mode: 'Markdown', ...mainInlineKeyboard() }
       );
     }
@@ -556,24 +562,20 @@ bot.on('text', (ctx, next) => {
   return next();
 });
 
-// /set_threshold <sell|buy> <kzt|rub> <price>
+// /set_threshold <kzt|rub> <price>
 bot.command('set_threshold', (ctx) => {
   const args = ctx.message.text.split(' ').slice(1);
-  if (args.length < 3) {
+  if (args.length < 2) {
     return ctx.reply(
-      '⚠️ Использование: `/set_threshold <sell|buy> <kzt|rub> <цена>`\n' +
-      'Например: `/set_threshold sell kzt 445`',
+      '⚠️ Использование: `/set_threshold <kzt|rub> <цена>`\n' +
+      'Например: `/set_threshold kzt 445`',
       { parse_mode: 'Markdown' }
     );
   }
 
-  const sideArg = args[0].toUpperCase();
-  const fiat = args[1].toUpperCase();
-  const val = parseFloat(args[2].replace(',', '.'));
+  const fiat = args[0].toUpperCase();
+  const val = parseFloat(args[1].replace(',', '.'));
 
-  if (!['SELL', 'BUY'].includes(sideArg)) {
-    return ctx.reply('❌ Укажите сторону: `sell` или `buy`', { parse_mode: 'Markdown' });
-  }
   if (!PAIRS.includes(fiat)) {
     return ctx.reply('❌ Укажите валюту: `kzt` или `rub`', { parse_mode: 'Markdown' });
   }
@@ -582,15 +584,10 @@ bot.command('set_threshold', (ctx) => {
   }
 
   const pc = pairConfigs[fiat];
-  if (sideArg === 'SELL') {
-    pc.sellThreshold = val;
-  } else {
-    pc.buyThreshold = val;
-  }
+  pc.sellThreshold = val;
 
-  const label = sideArg === 'SELL' ? 'КУПИТЬ' : 'ПРОДАТЬ';
   ctx.reply(
-    `🎯 Порог ${label} (${fiat}) установлен: *${fmtPrice(val)} ${fiat}*`,
+    `🎯 Порог КУПИТЬ (${fiat}) установлен: *${fmtPrice(val)} ${fiat}*`,
     { parse_mode: 'Markdown', ...mainInlineKeyboard() }
   );
 });
@@ -621,11 +618,11 @@ async function main() {
   console.log('═══════════════════════════════════════════');
   console.log('  🚀 Wallet P2P Monitor Bot');
   console.log('═══════════════════════════════════════════');
-  console.log(`  Pairs:    ${PAIRS.map(f => `USDT/${f}`).join(', ')}`);
+  console.log(`  Pairs:    ${PAIRS.map(f => `USDT/${f}`).join(', ')} (КУПИТЬ)`);
   console.log(`  Interval: ${CHECK_INTERVAL}s`);
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    console.log(`  [${fiat}] Sell Thr: ${pc.sellThreshold || 'disabled'} | Buy Thr: ${pc.buyThreshold || 'disabled'}`);
+    console.log(`  [${fiat}] Sell Thr: ${pc.sellThreshold || 'disabled'}`);
   }
   console.log('═══════════════════════════════════════════');
 
@@ -638,18 +635,29 @@ async function main() {
   bot.launch();
   console.log('🤖 Telegram bot started');
 
+  // Register commands menu
+  try {
+    await bot.telegram.setMyCommands([
+      { command: 'status', description: '📊 Статус мониторинга' },
+      { command: 'price', description: '🔎 Проверить цены сейчас' },
+      { command: 'pause', description: '⏸ Приостановить мониторинг' },
+      { command: 'resume', description: '▶️ Возобновить мониторинг' },
+      { command: 'help', description: '📖 Справка' }
+    ]);
+    console.log('✅ Telegram bot commands menu registered');
+  } catch (err) {
+    console.error('⚠️ Failed to set commands:', err.message);
+  }
+
   // Send startup notification
   const threshLines = PAIRS.map(fiat => {
     const pc = pairConfigs[fiat];
-    const parts = [];
-    if (pc.sellThreshold) parts.push(`SELL: ${fmtPrice(pc.sellThreshold)}`);
-    if (pc.buyThreshold) parts.push(`BUY: ${fmtPrice(pc.buyThreshold)}`);
-    return parts.length ? `• ${fiat}: ${parts.join(' | ')}` : `• ${fiat}: пороги не заданы`;
+    return pc.sellThreshold ? `• ${fiat} КУПИТЬ: ${fmtPrice(pc.sellThreshold)}` : `• ${fiat} КУПИТЬ: порог не задан`;
   }).join('\n');
 
   await sendAlert(
     `🚀 *P2P Monitor запущен!*\n\n` +
-    `• Пары: ${PAIRS.map(f => `USDT/${f}`).join(', ')}\n` +
+    `• Пары: ${PAIRS.map(f => `USDT/${f}`).join(', ')} (КУПИТЬ)\n` +
     `• Интервал: ${CHECK_INTERVAL} сек\n` +
     `${threshLines}\n\n` +
     `Отправь /help для списка команд.`

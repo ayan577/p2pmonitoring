@@ -50,11 +50,12 @@ function filterAndLimitAds(ads, fiatCurrency, side) {
     (ad.payments || []).some((p) => allowed.includes(p.toLowerCase()))
   );
 
-  // Apply 3,500 RUB limit for SBP ads in RUB SELL
+  // Apply 3,500 RUB limit for SBP ads in RUB SELL (if they don't also support YooMoney)
   if (side === 'SELL') {
     filtered = filtered.filter((ad) => {
       const hasSbp = (ad.payments || []).some((p) => p.toLowerCase() === 'sbp');
-      if (hasSbp) {
+      const hasYoomoney = (ad.payments || []).some((p) => p.toLowerCase() === 'yoomoney');
+      if (hasSbp && !hasYoomoney) {
         const min = parseFloat(ad.minAmount);
         const max = parseFloat(ad.maxAmount);
         return min <= 3500 && max >= 3500;
@@ -123,6 +124,30 @@ async function fetchAds(pairConfig, sideToFetch, page = 1, pageSize = 20) {
     console.error('❌ API Error:', msg);
     return null;
   }
+}
+
+async function fetchAllAds(pairConfig, sideToFetch) {
+  const pages = [1, 2, 3, 4, 5];
+  const promises = pages.map((page) => fetchAds(pairConfig, sideToFetch, page, 50));
+  const results = await Promise.all(promises);
+
+  const allAds = [];
+  const seenIds = new Set();
+
+  for (const ads of results) {
+    if (ads) {
+      for (const ad of ads) {
+        if (!seenIds.has(ad.id)) {
+          seenIds.add(ad.id);
+          allAds.push(ad);
+        }
+      }
+    }
+  }
+
+  if (results.every(r => r === null)) return null;
+
+  return allAds;
 }
 
 // ─── Price Analysis ─────────────────────────────────────────
@@ -257,7 +282,7 @@ async function sendAlert(text) {
 // ─── Main Check Loop ────────────────────────────────────────
 async function checkSidePrices(pairConfig, side) {
   const fiat = pairConfig.fiatCurrency;
-  const rawAds = await fetchAds(pairConfig, side);
+  const rawAds = await fetchAllAds(pairConfig, side);
 
   if (rawAds === null) {
     console.log(`⚠️  [${new Date().toLocaleTimeString()}] API error for ${side} ${fiat}, retrying...`);
@@ -358,7 +383,7 @@ bot.command('price', async (ctx) => {
   ctx.reply('🔍 Проверяю...');
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    const rawAds = await fetchAds(pc, 'SELL');
+    const rawAds = await fetchAllAds(pc, 'SELL');
     if (rawAds === null) {
       await ctx.reply(`❌ Ошибка API для КУПИТЬ ${fiat}. Попробуй позже.`);
       continue;
@@ -377,7 +402,7 @@ const topHandler = async (ctx) => {
   ctx.reply('🔍 Загружаю топ...');
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    const rawAds = await fetchAds(pc, 'SELL', 1, 50);
+    const rawAds = await fetchAllAds(pc, 'SELL');
     if (rawAds === null) {
       await ctx.reply(`❌ Ошибка API для КУПИТЬ ${fiat}.`);
       continue;
@@ -466,7 +491,7 @@ bot.hears('🔎 Проверить цену', async (ctx) => {
   ctx.reply('🔍 Проверяю...');
   for (const fiat of PAIRS) {
     const pc = pairConfigs[fiat];
-    const rawAds = await fetchAds(pc, 'SELL');
+    const rawAds = await fetchAllAds(pc, 'SELL');
     if (rawAds === null) {
       await ctx.reply(`❌ Ошибка API для КУПИТЬ ${fiat}. Попробуй позже.`);
       continue;

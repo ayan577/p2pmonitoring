@@ -1,0 +1,25 @@
+# systemd-юнит для запуска бота без Docker (вариант Б в README).
+# Установка:
+#   sudo cp deploy/p2p-monitor.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/p2p-monitor.service   # поправь пути и /usr/bin/node
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now p2p-monitor
+# Логи:  journalctl -u p2p-monitor -f
+
+[Unit]
+Description=P2P Monitor Bot (Wallet + Bybit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Путь до папки с index.js и .env (поправь под свой VPS)
+WorkingDirectory=/opt/p2p-monitor
+# Узнать путь к node:  which node
+ExecStart=/usr/bin/node index.js
+# Автоперезапуск при падении — бот должен жить 24/7
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

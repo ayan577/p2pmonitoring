@@ -130,6 +130,8 @@ sudo docker compose down
 > бот не опрашивает Telegram: команды копятся на серверах Telegram и доставляются только после
 > пробуждения (а иногда теряются совсем — см. логи «Telegram bot launch failed»). На VPS бот
 > работает 24/7, cron-job.org больше не нужен.
+>
+> 📋 **Пошаговый чеклист дня переезда (Render → VPS): [`deploy/MIGRATION.md`](deploy/MIGRATION.md)**
 
 ### Быстрый путь — скрипт `deploy/deploy-vps.sh`
 

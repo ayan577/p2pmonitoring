@@ -131,6 +131,19 @@ sudo docker compose down
 > пробуждения (а иногда теряются совсем — см. логи «Telegram bot launch failed»). На VPS бот
 > работает 24/7, cron-job.org больше не нужен.
 
+### Быстрый путь — скрипт `deploy/deploy-vps.sh`
+
+Скрипт сам клонирует/обновляет репо, проверяет Docker, создаёт `.env` из шаблона,
+подбирает свободный порт (не конфликтует со вторым проектом) и поднимает контейнер:
+
+```bash
+git clone https://github.com/ayan577/p2pmonitoring.git && cd p2pmonitoring
+bash deploy/deploy-vps.sh
+# с явным портом:  P2P_PORT=4100 bash deploy/deploy-vps.sh
+```
+
+Повторный запуск = обновление (`git pull` + пересборка).
+
 ### Вариант А — Docker Compose (проще)
 
 ```bash

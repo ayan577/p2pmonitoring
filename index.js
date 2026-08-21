@@ -15,6 +15,7 @@ const {
   CHAT_ID,
   WALLET_API_KEY,
   CHECK_INTERVAL = '30',
+  BYBIT_CHECK_INTERVAL = '10',
   CRYPTO_CURRENCY = 'USDT',
   SELL_THRESHOLD_KZT = '',
   MIN_LIMIT_KZT = '',
@@ -29,8 +30,12 @@ if (!BOT_TOKEN || !CHAT_ID || !WALLET_API_KEY) {
 }
 
 // Guard against CHECK_INTERVAL=0/garbage → would otherwise setInterval at ~0ms and hammer the API
-const INTERVAL_SECONDS = parseInt(CHECK_INTERVAL, 10);
-const INTERVAL_MS = (Number.isFinite(INTERVAL_SECONDS) && INTERVAL_SECONDS > 0 ? INTERVAL_SECONDS : 30) * 1000;
+function parseIntervalSec(raw, fallback) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+const INTERVAL_MS = parseIntervalSec(CHECK_INTERVAL, 30) * 1000;
+const BYBIT_INTERVAL_MS = parseIntervalSec(BYBIT_CHECK_INTERVAL, 10) * 1000;
 
 // ─── Pair & threshold (RUB полностью удалён) ────────────────
 const FIAT = 'KZT'; // единственная пара USDT/KZT, только покупка USDT
@@ -61,7 +66,8 @@ let monitoring = true;
 let lastCheckTime = null;
 let totalChecks = 0;
 let totalAlerts = 0;
-let checkTimer = null;
+let walletTimer = null;
+let bybitTimer = null;
 let checkInProgress = false; // re-entrancy guard for checkPrices()
 let waitingForThreshold = null; // { side: 'SELL', fiat: 'KZT' }
 
@@ -328,7 +334,8 @@ function buildStatusMessage() {
     `📊 *Статус мониторинга*`,
     ``,
     `• Состояние: ${monitoring ? '✅ Активен' : '⏸ Приостановлен'}`,
-    `• Интервал: ${Math.round(INTERVAL_MS / 1000)} сек`,
+    `• Интервал Wallet: ${Math.round(INTERVAL_MS / 1000)} сек`,
+    `• Интервал Bybit: ${Math.round(BYBIT_INTERVAL_MS / 1000)} сек`,
     ``,
     `━━━ *USDT/${FIAT}* (КУПИТЬ) ━━━`,
     `• Порог: ${sellThreshold ? fmtPrice(sellThreshold) : 'не задан'}`,
@@ -426,8 +433,8 @@ async function checkPlatformPrice(platformConfig, side) {
   platformConfig.lastBestPrice[side] = bestPrice;
 }
 
-async function checkPrices() {
-  // Re-entrancy guard: if a check takes longer than CHECK_INTERVAL, the next timer
+async function checkPrices(platformIds = PLATFORM_IDS) {
+  // Re-entrancy guard: if a check takes longer than the interval, the next timer
   // tick must not start a concurrent run (overlapping runs corrupt totalChecks/
   // lastBestPrice and can emit duplicated or missed alerts).
   if (!monitoring || checkInProgress) return;
@@ -436,8 +443,7 @@ async function checkPrices() {
     totalChecks++;
     lastCheckTime = new Date();
 
-    // Обе площадки опрашиваем параллельно
-    const tasks = PLATFORM_IDS.map((id) => checkPlatformPrice(platforms[id], 'SELL'));
+    const tasks = platformIds.map((id) => checkPlatformPrice(platforms[id], 'SELL'));
     await Promise.all(tasks);
   } finally {
     checkInProgress = false;
@@ -483,7 +489,7 @@ bot.command('help', (ctx) => {
     `*Мониторинг:*\n` +
     `• Пара: USDT/KZT (только покупка USDT)\n` +
     `• Площадки: Wallet и Bybit\n` +
-    `• Проверка каждые ${CHECK_INTERVAL} сек\n` +
+    `    • Проверка Wallet каждые ${Math.round(INTERVAL_MS / 1000)} сек\n    • Проверка Bybit каждые ${Math.round(BYBIT_INTERVAL_MS / 1000)} сек\n` +
     `• Лимиты: ${fmtLimits()}\n` +
     `• Алерт приходит от площадки, чья цена достигла порога`,
     { parse_mode: 'Markdown', ...mainKeyboard }
@@ -831,7 +837,8 @@ async function main() {
   console.log('═══════════════════════════════════════════');
   console.log(`  Pair:     USDT/${FIAT} (КУПИТЬ)`);
   console.log(`  Platforms: ${PLATFORM_IDS.join(', ')}`);
-  console.log(`  Interval: ${CHECK_INTERVAL}s`);
+  console.log(`  Wallet interval: ${Math.round(INTERVAL_MS / 1000)}s`);
+  console.log(`  Bybit interval:  ${Math.round(BYBIT_INTERVAL_MS / 1000)}s`);
   console.log(`  Sell Thr: ${sellThreshold || 'disabled'}`);
   console.log(`  Limits:   ${fmtLimits()}`);
   console.log('═══════════════════════════════════════════');
@@ -885,7 +892,8 @@ async function main() {
     `🚀 *P2P Monitor запущен!*\n\n` +
     `• Пара: USDT/${FIAT} (КУПИТЬ)\n` +
     `• Площадки: ${PLATFORM_IDS.join(', ')}\n` +
-    `• Интервал: ${CHECK_INTERVAL} сек\n` +
+    `• Интервал Wallet: ${Math.round(INTERVAL_MS / 1000)} сек\n` +
+    `• Интервал Bybit: ${Math.round(BYBIT_INTERVAL_MS / 1000)} сек\n` +
     `• Порог: ${sellThreshold ? fmtPrice(sellThreshold) : 'не задан'}\n` +
     `• Лимиты: ${fmtLimits()}\n\n` +
     `Отправь /help для списка команд.`
@@ -893,7 +901,8 @@ async function main() {
 
   // Start monitoring loop
   await checkPrices();
-  checkTimer = setInterval(checkPrices, INTERVAL_MS);
+  walletTimer = setInterval(() => checkPrices(['WALLET']), INTERVAL_MS);
+  bybitTimer = setInterval(() => checkPrices(['BYBIT']), BYBIT_INTERVAL_MS);
 }
 
 // Catch unhandled errors inside bot handlers (network blips, parse errors, …)
@@ -906,7 +915,8 @@ bot.catch((err) => {
 // exits cleanly instead of crashing inside the signal handler.
 function shutdown(signal) {
   console.log('\n🛑 Shutting down...');
-  clearInterval(checkTimer);
+  clearInterval(walletTimer);
+  clearInterval(bybitTimer);
   try {
     bot.stop(signal);
   } catch (err) {

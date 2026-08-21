@@ -448,8 +448,11 @@ async function checkPrices() {
 
 // Security middleware
 bot.use((ctx, next) => {
-  if (String(ctx.from?.id) !== String(CHAT_ID)) {
-    return ctx.reply('⛔ Доступ запрещён');
+  const userId = String(ctx.from?.id);
+  const expectedId = String(CHAT_ID);
+  if (userId !== expectedId) {
+    console.log(`🔒 Command blocked: user=${userId}, expected=${expectedId}`);
+    return ctx.reply('⛔ Доступ запрещён. Ваш Chat ID не совпадает с настроенным.');
   }
   return next();
 });
@@ -838,9 +841,24 @@ async function main() {
     console.log(`🌐 Keep-alive server on port ${PORT}`);
   });
 
+  // Clear any stale webhook left from a previous deployment (Render / webhook mode).
+  // If a webhook is set, Telegram rejects getUpdates with 409 → polling never
+  // receives updates, while alerts still work (sendMessage is a plain API call).
+  // drop_pending_updates: stale commands queued during the outage would otherwise
+  // execute all at once (e.g. old threshold changes) — discard them.
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    console.log('✅ Stale webhook cleared (polling mode)');
+  } catch (err) {
+    console.warn('⚠️ deleteWebhook failed:', err.message);
+  }
+
   // Launch Telegram bot (attach .catch so an invalid token rejects the returned
   // promise instead of crashing the process via an unhandled rejection)
   bot.launch().catch((err) => {
+    if (/409|Conflict|terminated by other getUpdates/i.test(err.message)) {
+      console.error('❌ 409 Conflict: бот запущен В ДВУХ МЕСТАХ! Останови второй инстанс (Render?) и перезапусти контейнер: docker compose restart');
+    }
     console.error('❌ Telegram bot launch failed:', err.message);
   });
   console.log('🤖 Telegram bot started');

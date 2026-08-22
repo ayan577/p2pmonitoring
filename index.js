@@ -159,11 +159,11 @@ async function fetchBybitPublicAds(sideToFetch, page = 1, pageSize = 20) {
     // Принимаем и retCode, и ret_code; свободное == 0 покрывает число/строку
     const ok = data && typeof data === 'object' && (data.retCode == 0 || data.ret_code == 0);
     if (ok) {
-      // Пропускаем объявления, где продавец требует наличие своего объявления,
-      // и берём ТОЛЬКО онлайн-объявления: isOnline=false (офлайн/скам-приманки
+      // Берём ТОЛЬКО онлайн-объявления: isOnline=false (офлайн/скам-приманки
       // типа 402.99 KZT) в тейдерском фиде UI не показываются — не мониторим их.
+      // Объявления с hasUnPostAd (продавец требует своё объявление) НЕ фильтруем —
+      // по решению владельца они тоже попадают в цены и алерты.
       const items = (data.result?.items || [])
-        .filter((i) => !((i.tradingPreferenceSet || {}).hasUnPostAd))
         .filter((i) => i.isOnline === true || i.isOnline === 1);
       return items.map(normalizeBybitAd);
     }

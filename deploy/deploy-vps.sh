@@ -107,7 +107,7 @@ port_in_use() {
 }
 
 # Если контейнер уже запущен — сохраняем его текущий порт, чтобы не пересоздавать без нужды
-running_port="$(docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Ports}}' 2>/dev/null | grep -o ':[0-9]\+->' | head -n1 | tr -d ':->' || true)"
+running_port="$(docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Ports}}' 2>/dev/null | grep -o ':[0-9]\+->' | head -n1 | sed 's/[^0-9]//g' || true)"
 
 if [ -n "$running_port" ]; then
   HOST_PORT="$running_port"

@@ -5,6 +5,8 @@
 // ============================================================
 
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const express = require('express');
@@ -20,6 +22,7 @@ const {
   SELL_THRESHOLD_KZT = '',
   MIN_LIMIT_KZT = '',
   MAX_LIMIT_KZT = '',
+  SETTINGS_FILE = '',
   PORT = '3000',
 } = process.env;
 
@@ -52,6 +55,77 @@ function parseLimit(v) {
 let minLimit = parseLimit(MIN_LIMIT_KZT);
 let maxLimit = parseLimit(MAX_LIMIT_KZT);
 
+// ─── Persistent settings (threshold + limits survive restarts) ─
+// Значения из Telegram (порог, мин/макс лимиты) хранятся в JSON-файле.
+// При старте файл имеет приоритет над .env; при отсутствии файла стартовые
+// значения берутся из .env и сразу записываются в файл. Каждое изменение
+// через бота сохраняется немедленно, поэтому настройки не теряются при
+// рестарте/редеплое. Путь можно переопределить через SETTINGS_FILE.
+const SETTINGS_PATH = SETTINGS_FILE || path.join(__dirname, 'settings.json');
+
+function saveSettings() {
+  try {
+    fs.writeFileSync(
+      SETTINGS_PATH,
+      JSON.stringify({ sellThreshold, minLimit, maxLimit }, null, 2) + '\n'
+    );
+  } catch (err) {
+    console.error(`⚠️  Failed to save settings to ${SETTINGS_PATH}:`, err.message);
+  }
+}
+
+function loadSettings() {
+  let raw;
+  try {
+    raw = fs.readFileSync(SETTINGS_PATH, 'utf8');
+  } catch {
+    // Файла ещё нет — фиксируем текущие значения (.env) как базовые,
+    // чтобы они сохранились и пережили первый рестарт.
+    saveSettings();
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`⚠️  Corrupt settings file ${SETTINGS_PATH} (${err.message}) — using .env values`);
+    return;
+  }
+  if (parsed && typeof parsed === 'object') {
+    // Отсутствующий ключ = «оставить значение из .env»; null/'' = «сбросить»;
+    // иначе парсим и при мусоре оставляем текущее значение с предупреждением.
+    if (parsed.sellThreshold !== undefined) {
+      if (parsed.sellThreshold === null || parsed.sellThreshold === '') {
+        sellThreshold = null;
+      } else {
+        const v = parseFloat(parsed.sellThreshold);
+        if (Number.isFinite(v) && v > 0) sellThreshold = v;
+        else console.error(`⚠️  Ignoring invalid sellThreshold in ${SETTINGS_PATH} — keeping .env value`);
+      }
+    }
+    if (parsed.minLimit !== undefined) {
+      if (parsed.minLimit === null || parsed.minLimit === '') {
+        minLimit = null;
+      } else {
+        const lo = parseLimit(parsed.minLimit);
+        if (lo === null) console.error(`⚠️  Ignoring invalid minLimit in ${SETTINGS_PATH} — keeping .env value`);
+        else minLimit = lo;
+      }
+    }
+    if (parsed.maxLimit !== undefined) {
+      if (parsed.maxLimit === null || parsed.maxLimit === '') {
+        maxLimit = null;
+      } else {
+        const hi = parseLimit(parsed.maxLimit);
+        if (hi === null) console.error(`⚠️  Ignoring invalid maxLimit in ${SETTINGS_PATH} — keeping .env value`);
+        else maxLimit = hi;
+      }
+    }
+  }
+}
+
+loadSettings();
+
 // ─── Platforms ──────────────────────────────────────────────
 // У каждой площадки свой lastBestPrice и свои алерты по общему порогу.
 const PLATFORM_IDS = ['WALLET', 'BYBIT'];
@@ -68,7 +142,12 @@ let totalChecks = 0;
 let totalAlerts = 0;
 let walletTimer = null;
 let bybitTimer = null;
-let checkInProgress = false; // re-entrancy guard for checkPrices()
+// Re-entrancy guard — ОТДЕЛЬНЫЙ флаг на каждую площадку. Раньше был один общий
+// флаг на обе площадки, а интервалы Wallet (30с) и Bybit (10с) — кратные, поэтому
+// каждый тик Wallet совпадал с тиком Bybit и одна из проверок отбрасывалась.
+// На практике Wallet систематически проигрывал: его цена обновлялась один раз
+// при старте и больше никогда — алерты от Wallet не приходили.
+const checkInProgressByPlatform = { WALLET: false, BYBIT: false };
 let waitingForThreshold = null; // { side: 'SELL', fiat: 'KZT' }
 
 // ─── Wallet P2P API ─────────────────────────────────────────
@@ -434,19 +513,21 @@ async function checkPlatformPrice(platformConfig, side) {
 }
 
 async function checkPrices(platformIds = PLATFORM_IDS) {
-  // Re-entrancy guard: if a check takes longer than the interval, the next timer
-  // tick must not start a concurrent run (overlapping runs corrupt totalChecks/
-  // lastBestPrice and can emit duplicated or missed alerts).
-  if (!monitoring || checkInProgress) return;
-  checkInProgress = true;
+  if (!monitoring) return;
+  // Пропускаем только те площадки, чья предыдущая проверка ещё не завершилась
+  // (защита от наложения при медленной сети); остальные проверяем как обычно.
+  // Проверки разных площадок идут параллельно и не блокируют друг друга.
+  const ids = platformIds.filter((id) => !checkInProgressByPlatform[id]);
+  if (ids.length === 0) return;
+  ids.forEach((id) => { checkInProgressByPlatform[id] = true; });
   try {
     totalChecks++;
     lastCheckTime = new Date();
 
-    const tasks = platformIds.map((id) => checkPlatformPrice(platforms[id], 'SELL'));
+    const tasks = ids.map((id) => checkPlatformPrice(platforms[id], 'SELL'));
     await Promise.all(tasks);
   } finally {
-    checkInProgress = false;
+    ids.forEach((id) => { checkInProgressByPlatform[id] = false; });
   }
 }
 
@@ -681,6 +762,7 @@ bot.on('text', (ctx, next) => {
     }
 
     sellThreshold = val;
+    saveSettings(); // порог должен пережить рестарт
     // Force an immediate re-evaluation on both platforms: if the current price is
     // already at/below the new threshold, the next check must alert.
     for (const id of PLATFORM_IDS) {
@@ -724,6 +806,7 @@ bot.command('set_threshold', (ctx) => {
   }
 
   sellThreshold = val;
+  saveSettings(); // порог должен пережить рестарт
   // Force immediate re-evaluation (see text-handler note above)
   for (const id of PLATFORM_IDS) {
     platforms[id].lastBestPrice = { SELL: null };
@@ -766,6 +849,7 @@ bot.command('set_min_limit', (ctx) => {
     platforms[id].lastBestPrice = { SELL: null };
   }
   waitingForThreshold = null;
+  saveSettings(); // лимиты должны пережить рестарт
   ctx.reply(
     `📏 Мин. лимит объявления: *${fmtLimits()}*`,
     { parse_mode: 'Markdown', ...mainInlineKeyboard() }
@@ -802,6 +886,7 @@ bot.command('set_max_limit', (ctx) => {
     platforms[id].lastBestPrice = { SELL: null };
   }
   waitingForThreshold = null;
+  saveSettings(); // лимиты должны пережить рестарт
   ctx.reply(
     `📏 Макс. лимит объявления: *${fmtLimits()}*`,
     { parse_mode: 'Markdown', ...mainInlineKeyboard() }
@@ -841,6 +926,7 @@ async function main() {
   console.log(`  Bybit interval:  ${Math.round(BYBIT_INTERVAL_MS / 1000)}s`);
   console.log(`  Sell Thr: ${sellThreshold || 'disabled'}`);
   console.log(`  Limits:   ${fmtLimits()}`);
+  console.log(`  Settings: ${SETTINGS_PATH} (переживают рестарт)`);
   console.log('═══════════════════════════════════════════');
 
   // Start Express server
@@ -878,6 +964,7 @@ async function main() {
       { command: 'top', description: '🏆 Топ-5 предложений' },
       { command: 'pause', description: '⏸ Приостановить мониторинг' },
       { command: 'resume', description: '▶️ Возобновить мониторинг' },
+      { command: 'set_threshold', description: '🎯 Порог покупки KZT' },
       { command: 'set_min_limit', description: '📏 Мин. лимит суммы объявления' },
       { command: 'set_max_limit', description: '📏 Макс. лимит суммы объявления' },
       { command: 'help', description: '📖 Справка' }

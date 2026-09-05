@@ -119,6 +119,27 @@ else
 fi
 ok "Хост-порт: $HOST_PORT"
 
+# ─── 4b. settings.json (persistent-настройки) ──────────────
+# Порог и лимиты, заданные через Telegram, живут в settings.json (volume в
+# docker-compose.yml). Если на хосте файла нет, Docker создал бы ДИРЕКТОРИЮ с
+# таким именем и настройки не сохранялись бы — поэтому создаём обычный файл.
+# Значения берём из .env (пустые → null = без порога/фильтра).
+if [ ! -e settings.json ]; then
+  info "Создаю settings.json из значений .env ..."
+  thr="$(grep -E '^SELL_THRESHOLD_KZT=' .env 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d '[:space:]')"
+  mn="$(grep -E '^MIN_LIMIT_KZT=' .env 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d '[:space:]')"
+  mx="$(grep -E '^MAX_LIMIT_KZT=' .env 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d '[:space:]')"
+  [ -z "$thr" ] && thr="null" && info "SELL_THRESHOLD_KZT пуст — порог: null (алерты выключены до установки через Telegram)"
+  [ -z "$mn" ] && mn="null"
+  [ -z "$mx" ] && mx="null"
+  printf '{\n  "sellThreshold": %s,\n  "minLimit": %s,\n  "maxLimit": %s\n}\n' "$thr" "$mn" "$mx" > settings.json
+  ok "settings.json создан (порог=$thr, мин=$mn, макс=$mx)"
+elif [ ! -f settings.json ]; then
+  fail "settings.json существует, но это не обычный файл (вероятно, директория, созданная Docker). Удали: rm -rf settings.json — и запусти скрипт снова."
+else
+  ok "settings.json на месте — настройки из Telegram сохранятся"
+fi
+
 # ─── 5. Запуск ───────────────────────────────────────────────
 info "Собираю и запускаю контейнер ($COMPOSE up -d --build) ..."
 $COMPOSE up -d --build

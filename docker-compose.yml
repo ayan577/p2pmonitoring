@@ -5,6 +5,13 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      # Файл persistent-настроек (порог KZT + мин/макс лимиты, меняются через
+      # Telegram). Без volume он потерялся бы при каждой пересборке контейнера.
+      # Важно: на хосте это должен быть ОБЫЧНЫЙ ФАЙЛ (не директория) — скрипт
+      # deploy/deploy-vps.sh создаёт его автоматически; при ручном запуске:
+      #   touch settings.json && docker compose up -d --build
+      - ./settings.json:/app/settings.json
     ports:
       # Хост-порт настраивается через P2P_PORT (по умолчанию 3000). Если на VPS
       # порт 3000 уже занят другим проектом — запусти с P2P_PORT=3100 (или любым

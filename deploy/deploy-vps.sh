@@ -46,8 +46,18 @@ if [ ! -d "$REPO_DIR/.git" ]; then
   git clone "$REPO_URL" "$REPO_DIR"
   ok "Репозиторий склонирован"
 else
+  # ВАЖНО: bash читает выполняемый скрипт с диска по ходу дела. Если git pull
+  # заменит этот файл прямо во время выполнения, дальше исполнится каша из
+  # старой и новой версий (уже ловили: пропускалась секция settings.json).
+  # Поэтому при обновлении — перезапускаем уже новую версию скрипта.
   info "Репозиторий уже есть, обновляю (git pull --ff-only) ..."
+  before_rev="$(git -C "$REPO_DIR" rev-parse HEAD)"
   ( cd "$REPO_DIR" && git pull --ff-only ) || warn "Не удалось подтянуть обновления — продолжаю с текущей версией"
+  after_rev="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  if [ "$before_rev" != "$after_rev" ]; then
+    info "Скрипт обновлён из git — перезапускаю новую версию ..."
+    exec bash "$REPO_DIR/deploy/deploy-vps.sh" "$@"
+  fi
 fi
 
 cd "$REPO_DIR"
